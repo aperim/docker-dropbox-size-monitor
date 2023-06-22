@@ -2,37 +2,59 @@
 
 This script helps you keep track of your Dropbox storage usage and sends alerts via SMS when the usage exceeds defined thresholds. The alerts are sent via the Twilio API. 
 
-The script can be run continuously or just once using an optional parameter. It can handle different types of Dropbox tokens, whether they're scoped for a single user or a team. When handling team tokens, the script will impersonate an admin user.
+The script can be run continuously or just once using an optional parameter. It can handle different types of Dropbox tokens, whether they're scoped for a single user or a team. When handling team tokens, the script will impersonate an admin user. Additionally, the script supports OAuth 2.0 and automatic token refreshing.
 
 The script can also publish MQTT messages that contain information about the current storage usage. These MQTT messages can be handled by various home automation software like Home Assistant.
 
 ## Setup
 
-First, you will need credentials for Dropbox and Twilio. This includes a `DROPBOX_TOKEN` from Dropbox and credentials (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`) from Twilio.
+As the script relies on a Dropbox OAuth 2 flow, an initial setup is required to obtain a token. The script will automatically initiate this process if it doesn't find a `DROPBOX_TOKEN` environment variable. 
 
-Then, determine the phone number(s) you wish to send the alerts to and add them as a comma-separated string to the `PHONE_NUMBERS` environment variable.
+Upon initiation, the script starts a local server and opens a new tab in your default web browser where you order to approve its access to your Dropbox account. After you approve the access, the script retrieves the access and refresh tokens from Dropbox, Base64 encodes the token JSON, and outputs it for you to copy. This token must be stored as `DROPBOX_TOKEN` in your environment variables.
 
-If you want to use MQTT messaging, specify your MQTT server with the `MQTT_SERVER` and `MQTT_PORT` environment variables. You can specify the topic with the `MQTT_TOPIC` environment variable.
+In general, handle the `DROPBOX_TOKEN` securely as it allows access to your Dropbox account. Also ensure to keep the `DROPBOX_APP_KEY` and `DROPBOX_APP_SECRET` confidential to prevent misuse.
 
-Next, install the required Python dependencies with:
+The detailed steps to setup and run the script locally or using Docker are as follows:
+
+### Running Locally
+
+For running the script locally, first install the dependencies. In your terminal, navigate to the directory of the script and install the dependencies using pip:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If you want to use the Docker container:
+Then, run the script:
+
+```bash
+python app/monitor.py
+```
+
+When you run the script for the first time, a URL opens in your web browser. Approve the script’s access to your Dropbox account. Post approval, Dropbox redirects you back to a page served by a local server started by this script. The console where you run the script will display the access and refresh tokens. Encode this JSON string in Base64 and store it in the `DROPBOX_TOKEN` environment variable.
+
+### Using Docker
+
+If you are using Docker, pull the Docker image first:
 
 ```bash
 docker pull ghcr.io/aperim/docker-dropbox-size-monitor:latest
 ```
 
-You should then set the environment variables in the docker run command. 
+Then run the script using Docker:
+
+```bash
+docker run -p 5000:5000 --env-file .env ghcr.io/aperim/docker-dropbox-size-monitor:latest
+```
+
+Similar to running the script locally, you will see a URL in your web browser. Upon approving the script's access to your Dropbox, you will be redirected to a local server page. The tokens will be printed on the console where you ran the Docker command. 
 
 ## Environment Variables
 
 The script requires the following environment variables:
 
-* `DROPBOX_TOKEN` - Your Dropbox API token.
+* `DROPBOX_TOKEN` - Your Dropbox API token as a Base64 encoded JSON string.
+* `DROPBOX_APP_KEY` - Your Dropbox App Key.
+* `DROPBOX_APP_SECRET` - Your Dropbox App Secret.
 * `TWILIO_ACCOUNT_SID` - Your Twilio Account SID.
 * `TWILIO_AUTH_TOKEN` - Your Twilio Auth Token.
 * `TWILIO_PHONE_NUMBER` - Your Twilio phone number (i.e., the number from which alerts will be sent).
@@ -41,49 +63,43 @@ The script requires the following environment variables:
 * `WARNING_THRESHOLD` - The storage usage percentage for sending warnings (default is 90%).
 * `CRITICAL_THRESHOLD` - The storage usage percentage for sending critical alerts (default is 95%).
 * `MAX_ALERTS` - The maximum number of messages the script should send in any hour (default is 10).
-* `MQTT_SERVER` - The address of the MQTT server to connect to for update messages.
-* `MQTT_PORT` - The port of the MQTT server to connect to for update messages (default is 1883).
-* `MQTT_TOPIC` - The MQTT topic to post update messages to (default is `dropbox`).
+* `MQTT_SERVER` - The address of the MQTT server to connect to for update messages (if using MQTT).
+* `MQTT_PORT` - The port of the MQTT server to connect to for update messages (default is 1883; only needed if using MQTT).
+* `MQTT_TOPIC` - The MQTT topic to post update messages to (default is `dropbox`; only needed if using MQTT).
+
 
 ## Usage
 
-You can run the script directly from command line:
+Once the `DROPBOX_TOKEN` is set up, run the script:
 
 ```bash
 python app/monitor.py
 ```
 
-For a one-time run:
+The script can also perform a one-time run or verbose output:
 
 ```bash
-python app/monitor.py --one-shot
+python app/monitor.py --one-shot  # For a one-time run
+python app/monitor.py -v  # For verbose output
 ```
 
-For verbose output:
-
-```bash
-python app/monitor.py -v
-```
-
-If you're using the Docker container, run it with the needed environment variables:
+With Docker, you may use:
 
 ```bash
 docker run --env-file .env ghcr.io/aperim/docker-dropbox-size-monitor:latest
+docker run -p 5000:5000 --env-file .env ghcr.io/aperim/docker-dropbox-size-monitor:latest --one-shot  # For a one-time run
+docker run -p 5000:5000 --env-file .env ghcr.io/aperim/docker-dropbox-size-monitor:latest -v  # For verbose output
 ```
 
-Replace `.env` with the path to your environment variables file. For a one-time run, add `--one-shot` at the end. For verbose output, add `-v` at the end.
+Replace `.env` with the path to your environment variables file.
 
-## About the Script
+## About the script
 
-Every 5 minutes, the script checks your Dropbox storage usage. 
+Every 5 minutes, the script checks Dropbox storage usage. If usage exceeds 80%, 90%, or 95%, it sends an SMS alert. The type of alert is "alert,""warning," or "critical" for exceeding 80%, 90%, or 95%, respectively. 
 
-If usage exceeds 80%, 90%, or 95%, the script sends you an SMS alert. An alert is sent once, a warning is sent twice, and a critical alert is sent every time the storage usage is checked, up to the maximum number of allowed alerts per hour.
+Every alert includes the storage usage in percentage and in a human-readable format (KB, MB, GB, etc.), with a running delta of the changes. The script uses MQTT messages to provide details about the storage usage. It sends them in a dictionary with keys: the current storage usage in percentage and bytes, used and allocated storage in a human-readable format, and the state (OK, ALERT, WARNING, CRITICAL). 
 
-Every alert includes the storage usage in percentage and the amount of storage used in a human-readable format (KB, MB, GB, etc.). A running delta of the changes to storage usage is also included in the message.
-
-The script also sends MQTT messages with details about the storage usage. Each MQTT message contains the current storage usage in percentage and in bytes, the used and allocated storage in a human-readable format, and the state ('OK', 'ALERT', 'WARNING', 'CRITICAL').
-
-If you run the script in verbose mode, it logs its progress for each step.
+Running the script in verbose mode logs all steps.
 
 ## Testing
 
