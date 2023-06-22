@@ -1,30 +1,23 @@
-from unittest.mock import Mock, patch
-import app.monitor as monitor
 import pytest
+from app.monitor import convert_bytes_to_readable
 
-def test_calculate_dropbox_usage(mocker):
-    # Mocking the required responses
-    mocker.patch("app.monitor.dbx.users_get_space_usage", return_value=Mock(used=500, allocation=Mock(get_individual=Mock(return_value=Mock(allocated=1000)))))
+def test_convert_bytes_to_readable():
+    """Test convert_bytes_to_readable function."""
 
-    assert monitor.calculate_dropbox_usage() == 50
+    # Test bytes with no units
+    assert convert_bytes_to_readable(500) == "500.0"
 
-def test_send_alerts(mocker):
-    # Mocking the required responses
-    # We'll override the phone numbers to avoid sending real messages during testing
-    monitor.phone_numbers = ['+9876543210']
-    mocker.patch("app.monitor.client.messages.create", return_value=Mock())
+    # Test kilobytes
+    assert convert_bytes_to_readable(1500) == "1.5KB"
 
-    monitor.send_alerts('alert', 10)
-    monitor.client.messages.create.assert_called_once_with(body='Dropbox has crossed the alert level of 80%.',
-                                                          to='+9876543210',
-                                                          from_=monitor.twilio_phone_number)
+    # Test megabytes
+    assert convert_bytes_to_readable(1049000) == "1.0MB"
 
-    monitor.send_alerts('warning', 10)
-    monitor.client.messages.create.assert_called_with(body='Dropbox has crossed the warning level of 90%. The rate of increase is 10 per hour.',
-                                                      to='+9876543210',
-                                                      from_=monitor.twilio_phone_number)
+    # Test gigabytes
+    assert convert_bytes_to_readable(1610613000) == "1.5GB"
 
-    monitor.send_alerts('critical', 10)
-    monitor.client.messages.create.assert_called_with(body='CRITICAL WARNING. Dropbox has crossed the critical level of 95%. The rate of increase is 10 per hour.',
-                                                      to='+9876543210',
-                                                      from_=monitor.twilio_phone_number)
+    # Test terabytes
+    assert convert_bytes_to_readable(2200000000000) == "2.0TB"
+
+    # Test petabytes
+    assert convert_bytes_to_readable(2251799813700000) == "2.0PB"

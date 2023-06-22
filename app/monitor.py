@@ -156,6 +156,9 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
 
     usage_pc = (float(storage_info.used) / allocated) * 100
 
+    # Shorten the percentage to two decimal places
+    usage_pc = round(usage_pc, 2)
+
     # Convert usage to human-readable format
     storage_used_readable = convert_bytes_to_readable(storage_info.used)
 

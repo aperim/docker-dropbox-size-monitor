@@ -1,4 +1,4 @@
-dropbox==9.4.0
-twilio==6.50.1
-pytest==6.2.5
-pytest-mock==3.7.0
+dropbox==11.36.2
+twilio==8.3.0
+pytest==7.3.2
+pytest-mock==3.11.1
