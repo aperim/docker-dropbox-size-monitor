@@ -1,4 +1,5 @@
 import os
+import signal
 import argparse
 import dropbox
 from dropbox.exceptions import AuthError, BadInputError
@@ -10,10 +11,11 @@ import json
 import sys
 import base64
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify, make_response, after_this_request
 import threading
 import webbrowser
 
+# Constants
 DROPBOX_TOKEN = os.getenv('DROPBOX_TOKEN')
 DROPBOX_REFRESH_TOKEN = os.getenv('DROPBOX_REFRESH_TOKEN')
 DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
@@ -32,21 +34,35 @@ MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))  # MQTT port to use for updates
 MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'dropbox')  # MQTT topic to publish updates to
 MQTT_USERNAME = os.getenv('MQTT_USERNAME', None)
 MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', None)
+OAUTH_LOCALHOST_PORT = int(os.getenv('OAUTH_LOCALHOST_PORT', '53682'))
 
-# Variables used for rate limiting and to control number of alerts/warnings sent
+# MQTT Server connection variables
+MAX_RETRIES = 5  # maximum number of retries for connection to MQTT server
+RETRY_DELAY = 10  # delay in seconds before retrying the connection
+
+# Rate limiting and control variables for sent alerts and warnings
 hourly_counter = 0
 hour_start_time = datetime.datetime.now().hour
 alert_sent = 0
 warning_sent = 0
 
-# Used for the mqtt client - this work is incomplete
+# MQTT client
 mqtt_client = None
 
 app = Flask(__name__)
-redirect_uri = 'http://localhost:5000/oauth2/callback'
+redirect_uri = f'http://localhost:{OAUTH_LOCALHOST_PORT}/oauth2/callback'
 
-@app.route('/oauth2/callback')
+@app.route('/oauth2/callback', methods=['GET', 'OPTIONS'])
 def oauth2_callback():
+    # Pre-flight request. Reply successfully:
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "*")
+        response.headers.add('Access-Control-Allow-Methods', "*")
+        return response
+
+    # Handle the main request:
     code = request.args.get('code')
     if code:
         token_url = 'https://api.dropbox.com/oauth2/token'
@@ -64,19 +80,42 @@ def oauth2_callback():
         if r.status_code == 200:
             token_data = r.json()
             base64_token = base64.b64encode(json.dumps(token_data).encode())
-            print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}", flush=True)
-            os._exit(0)  # Ensure the script stops after printing token
+            token_str = base64_token.decode()
+            response = make_response((jsonify(message=f"Access token refreshed. Please set this in your environment variable: DROPBOX_TOKEN={token_str}"), 200))
+            # Define what to do after this request
+            @after_this_request
+            def shutdown(response):
+                print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={token_str}", flush=True)
+                threading.Timer(1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+                return response
+
+            return response
         else:
-            return "Error getting tokens.", 400
+            response = make_response((jsonify(error="Error getting tokens."), 400))
+            return response
     else:
-        return "No code found in request.", 400
+        response = make_response((jsonify(error="No code found in request."), 400))
+        return response
 
 def start_oauth():
+    """
+    Start the OAuth process by opening the Dropbox authorization URL in the browser.
+    Starts the Flask server to handle the callback URL.
+    """
     auth_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={DROPBOX_APP_KEY}&redirect_uri={redirect_uri}&token_access_type=offline"
     threading.Timer(1, lambda: webbrowser.open_new(auth_url)).start()
-    app.run()
+    app.run(port=OAUTH_LOCALHOST_PORT)
 
 def authenticate_dropbox(creds):
+    """
+    Authenticate to Dropbox with the provided credentials.
+
+    Checks whether the access token is individual or team scoped.
+    Refreshes expired access token.
+
+    :param creds: Dictionary containing 'uid', 'access_token', and 'refresh_token'.
+    :return: Authenticated Dropbox client (individual or team scope as applicable).
+    """
     if 'access_token' not in creds or 'refresh_token' not in creds or 'uid' not in creds:
         print("Malformed DROPBOX_TOKEN. Please ensure it's a Base64 encoded string of the token json received from Dropbox.", flush=True)
         os._exit(0)
@@ -175,7 +214,7 @@ def run_once(dropbox_client, twilio_client, verbose):
     :param twilio_client: Authenticated Twilio client.
     :param verbose: Boolean variable signifying whether to print verbose logs.
     :return: None.
-    """
+    """  
     storage_info = retrieve_storage_info(dropbox_client, verbose)
     delta = None
     alert_if_needed(storage_info, delta, twilio_client, verbose)
@@ -307,8 +346,20 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
 
     if MQTT_SERVER:
         publish_mqtt_update(usage_pc, storage_info.used, storage_used_readable, allocated, convert_bytes_to_readable(allocated), alert_type, verbose)
-
+        
 def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr, state, verbose):
+    """
+    Publish an update message to the MQTT server.
+    
+    :param usage_pc: Percentage of used storage.
+    :param used_bytes: Used storage in bytes.
+    :param used_hr: Used storage in a human-readable format.
+    :param allocation: Allocated storage in bytes.
+    :param allocation_hr: Allocated storage in a human-readable format.
+    :param state: Current state ('OK', 'ALERT', 'WARNING', 'CRITICAL')
+    :param verbose: Boolean that indicates whether to print verbose messages.
+    :return: None
+    """
     mqtt_payload = {
         "usagePercentage": usage_pc,
         "usedBytes": used_bytes,
@@ -332,8 +383,10 @@ def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr
     else:
         print(f"Failed to send message to topic {MQTT_TOPIC}", flush=True)
 
-
 def main():
+    """
+    The main function to run the script.
+    """
     global mqtt_client
     parser = argparse.ArgumentParser()
     parser.add_argument("--one-shot", action='store_true', default=False, help='Run the script once and exit')
@@ -360,7 +413,18 @@ def main():
         if MQTT_USERNAME and MQTT_PASSWORD:
             mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
-        mqtt_client.connect(MQTT_SERVER, MQTT_PORT)
+        # Add Exception Handling for MQTT Connection
+        for i in range(MAX_RETRIES):
+            try:
+                mqtt_client.connect(MQTT_SERVER, MQTT_PORT)
+                break
+            except Exception as e:
+                print(f'Failed to connect to MQTT server: {str(e)}', flush=True)
+                if i < MAX_RETRIES - 1:  # i is zero-indexed
+                    print(f'Retrying in {RETRY_DELAY} seconds...', flush=True)
+                    time.sleep(RETRY_DELAY)
+                else:
+                    print('All retries have failed. MQTT connection could not be established.', flush=True)
         mqtt_client.loop_start()
 
     if args.one_shot:
