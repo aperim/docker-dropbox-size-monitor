@@ -23,6 +23,7 @@ hour_start_time = datetime.datetime.now().hour
 alert_sent = 0
 warning_sent = 0
 
+
 def convert_bytes_to_readable(bytes_number):
     """
     Convert given number of bytes to a human-readable format.
@@ -32,6 +33,8 @@ def convert_bytes_to_readable(bytes_number):
             return f"{bytes_number:3.1f}{unit}"
         bytes_number /= 1024.0
     return f"{bytes_number:.1f}PB"
+
+
 
 def authenticate_dropbox(token):
     """
@@ -59,11 +62,14 @@ def authenticate_dropbox(token):
     
     return dbx
 
+
+
 def authenticate_twilio(account_sid, auth_token):
     """
     Authenticate to Twilio with the given credentials.
     """
     return Client(account_sid, auth_token)
+
 
 def retrieve_storage_info(dropbox_client, verbose):
     if verbose:
@@ -78,8 +84,9 @@ def retrieve_storage_info(dropbox_client, verbose):
         allocated = usage.allocation.get_team().allocated
     
     if verbose:
-        print(f"Fetched details: Used = {usage.used}, Allocated = {allocated}")
+        print(f"Fetched details: Used = {convert_bytes_to_readable(usage.used)}, Allocated = {convert_bytes_to_readable(allocated)}")
     return usage
+
 
 def run_once(dropbox_client, twilio_client, verbose):
     """
@@ -92,6 +99,7 @@ def run_once(dropbox_client, twilio_client, verbose):
     # Calculate percentage
     delta = None
     alert_if_needed(storage_info, delta, twilio_client, verbose)
+
 
 def run_daemon(dropbox_client, twilio_client, verbose):
     """
@@ -111,15 +119,17 @@ def run_daemon(dropbox_client, twilio_client, verbose):
         alert_if_needed(curr_storage_info, delta, twilio_client, verbose)
         time.sleep(300)
 
+
 def calculate_delta(prev_storage_info, curr_storage_info):
     return curr_storage_info.used - prev_storage_info.used
+
 
 def send_alert(twilio_client, alert_type, delta_msg, storage_used_readable, usage_pc):
     """
     Send the alert message using Twilio API
     """
 
-    # Update messages to include storage in percentage and human-readable format
+    # Include storage in percentage and human-readable format
     if alert_type == 'critical':
         msg_body = f"CRITICAL ALERT: Dropbox storage usage is at or above {usage_pc}% ({storage_used_readable}).{delta_msg}"
     elif alert_type == 'warning':
@@ -134,6 +144,7 @@ def send_alert(twilio_client, alert_type, delta_msg, storage_used_readable, usag
             to=phone_number
         )
         print(f"Alert sent to {phone_number}.")
+
 
 def alert_if_needed(storage_info, delta, twilio_client, verbose):
     global hourly_counter, hour_start_time, alert_sent, warning_sent
@@ -165,27 +176,28 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
         return
 
     # Send alerts based on threshold values
-    delta_msg = f" Storage use change from last check: {delta}" if delta else ""
+    delta_msg = f". Storage use change from last check: {delta}" if delta else ""
 
     if usage_pc >= CRITICAL_THRESHOLD:  # critical, sends every time
         if verbose:
             print("Current storage usage exceeds critical threshold. Sending critical alert...")
-        send_alert(twilio_client, "critical", delta_msg)
+        send_alert(twilio_client, "critical", delta_msg, storage_used_readable, usage_pc)
         hourly_counter += 1
     elif usage_pc >= WARNING_THRESHOLD:  # warning, sends twice
         if warning_sent < 2:
             if verbose:
                 print("Current storage usage exceeds warning threshold. Sending warning...")
-            send_alert(twilio_client, "warning", delta_msg)
+            send_alert(twilio_client, "warning", delta_msg, storage_used_readable, usage_pc)
             hourly_counter += 1
             warning_sent += 1
     elif usage_pc >= ALERT_THRESHOLD:  # alert, sends once
         if not alert_sent:
             if verbose:
                 print("Current storage usage exceeds alert threshold. Sending alert...")
-            send_alert(twilio_client, "alert", delta_msg)
+            send_alert(twilio_client, "alert", delta_msg, storage_used_readable, usage_pc)
             hourly_counter += 1
             alert_sent = 1
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -208,6 +220,7 @@ def main():
         run_once(dropbox_client, twilio_client, args.v)
     else:
         run_daemon(dropbox_client, twilio_client, args.v)
+
 
 if __name__ == '__main__':
     main()
