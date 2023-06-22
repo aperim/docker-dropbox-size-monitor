@@ -2,13 +2,17 @@
 
 This script helps you keep track of your Dropbox storage usage and sends alerts via SMS when the usage exceeds defined thresholds. The alerts are sent via the Twilio API. 
 
-It's possible to run the script continuously or just once using an optional parameter. The script can also handle different types of Dropbox tokens, whether they're scoped for a single user or a team. When handling team tokens, the script will impersonate an admin user.
+The script can be run continuously or just once using an optional parameter. It can handle different types of Dropbox tokens, whether they're scoped for a single user or a team. When handling team tokens, the script will impersonate an admin user.
+
+The script can also publish MQTT messages that contain information about the current storage usage. These MQTT messages can be handled by various home automation software like Home Assistant.
 
 ## Setup
 
-First, you need credentials for the relevant services. This includes a `DROPBOX_TOKEN` from Dropbox and credentials (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`) from Twilio.
+First, you will need credentials for Dropbox and Twilio. This includes a `DROPBOX_TOKEN` from Dropbox and credentials (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`) from Twilio.
 
-Then, determine the phone number(s) you wish to send the alerts to, and add them as a comma separated string to the `PHONE_NUMBERS` environment variable.
+Then, determine the phone number(s) you wish to send the alerts to and add them as a comma-separated string to the `PHONE_NUMBERS` environment variable.
+
+If you want to use MQTT messaging, specify your MQTT server with the `MQTT_SERVER` and `MQTT_PORT` environment variables. You can specify the topic with the `MQTT_TOPIC` environment variable.
 
 Next, install the required Python dependencies with:
 
@@ -37,6 +41,9 @@ The script requires the following environment variables:
 * `WARNING_THRESHOLD` - The storage usage percentage for sending warnings (default is 90%).
 * `CRITICAL_THRESHOLD` - The storage usage percentage for sending critical alerts (default is 95%).
 * `MAX_ALERTS` - The maximum number of messages the script should send in any hour (default is 10).
+* `MQTT_SERVER` - The address of the MQTT server to connect to for update messages.
+* `MQTT_PORT` - The port of the MQTT server to connect to for update messages (default is 1883).
+* `MQTT_TOPIC` - The MQTT topic to post update messages to (default is `dropbox`).
 
 ## Usage
 
@@ -68,15 +75,15 @@ Replace `.env` with the path to your environment variables file. For a one-time 
 
 ## About the Script
 
-The script checks Dropbox storage usage and sends alerts when the usage has crossed certain thresholds. The storage usage is checked every five minutes.
+Every 5 minutes, the script checks your Dropbox storage usage. 
 
-There are three types of alerts: alert, warning, and critical, which are sent when usage crosses 80%, 90%, and 95% respectively. An alert is only sent once, a warning twice, and a critical alert can be sent every time the storage is checked, up to the maximum number of allowed messages per hour.
+If usage exceeds 80%, 90%, or 95%, the script sends you an SMS alert. An alert is sent once, a warning is sent twice, and a critical alert is sent every time the storage usage is checked, up to the maximum number of allowed alerts per hour.
 
-Each alert includes the storage level in percentage and the amount of storage used in a human-readable format (KB, MB, GB, etc). A running delta of changes to storage use is also included in the message.
+Every alert includes the storage usage in percentage and the amount of storage used in a human-readable format (KB, MB, GB, etc.). A running delta of the changes to storage usage is also included in the message.
 
-When run in verbose mode, the script will log its progress through each step of the process.
+The script also sends MQTT messages with details about the storage usage. Each MQTT message contains the current storage usage in percentage and in bytes, the used and allocated storage in a human-readable format, and the state ('OK', 'ALERT', 'WARNING', 'CRITICAL').
 
-The script will also detect whether the provided Dropbox token is for an individual user or a team. If a team token is used, the script will find and impersonate an admin user for the storage space check.
+If you run the script in verbose mode, it logs its progress for each step.
 
 ## Testing
 
