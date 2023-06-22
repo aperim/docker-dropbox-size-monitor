@@ -9,6 +9,7 @@ services:
       - TWILIO_AUTH_TOKEN
       - TWILIO_PHONE_NUMBER
       - PHONE_NUMBERS
+      - LOGGING
     deploy:
       replicas: 1
       placement:

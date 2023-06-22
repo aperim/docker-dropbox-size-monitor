@@ -16,6 +16,7 @@ ALERT_THRESHOLD = float(os.getenv('ALERT_THRESHOLD', '80'))  # Default value: 80
 WARNING_THRESHOLD = float(os.getenv('WARNING_THRESHOLD', '90'))  # Default value: 90
 CRITICAL_THRESHOLD = float(os.getenv('CRITICAL_THRESHOLD', '95'))  # Default value: 95
 MAX_ALERTS = int(os.getenv('MAX_ALERTS', '10'))  # Default value: 10
+LOGGING = int(os.getenv('LOGGING', '0'))  # Default value: 0
 
 # Variables used for rate limiting and to control number of alerts/warnings sent
 hourly_counter = 0
@@ -212,7 +213,7 @@ def main():
     parser.add_argument(
         "-v",
         action='store_true',
-        default=False,
+        default=bool(LOGGING),  # Default value is determined by LOGGING
         help="Show verbose output")
     args = parser.parse_args()
 
