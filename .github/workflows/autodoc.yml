@@ -1,0 +1,62 @@
+name: AutoDoc
+
+on: 
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.x
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        sudo apt-get install python3-sphinx
+        pip install sphinx-rtd-theme
+
+    - name: Generate documentation
+      run: |
+        cd docs
+        sphinx-apidoc -f -o source/ ../app
+        make html
+
+    - name: Check if documentation has changed
+      id: check
+      run: |
+        git diff
+        echo ::set-output name=changed::$(if git diff --quiet; then echo "false"; else echo "true"; fi)
+
+    - name: Commit changes
+      run: |
+        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add -A
+        git commit -m "Update documentation"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@v0.6.0
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.head_ref }}
+
+    - name: Create Pull Request
+      if: steps.check.outputs.changed == 'true'
+      uses: peter-evans/create-pull-request@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: Update documentation
+        title: Update documentation
+        body: Update the documentation with the latest changes.
+        branch: autodoc/${{ github.run_id }}
+

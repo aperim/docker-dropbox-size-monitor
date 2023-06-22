@@ -7,6 +7,7 @@ import time
 import datetime
 import paho.mqtt.client as mqtt
 import json
+import sys
 
 DROPBOX_TOKEN = os.getenv('DROPBOX_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
@@ -33,7 +34,10 @@ mqtt_client = None
 
 def convert_bytes_to_readable(bytes_number):
     """
-    Convert given number of bytes to a human-readable format.
+    Convert the given number of bytes to a human-readable format.
+
+    :param bytes_number: The number of bytes.
+    :return: A string representing the number of bytes formatted to a legible format.
     """
     for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
         if bytes_number < 1024.0:
@@ -42,8 +46,10 @@ def convert_bytes_to_readable(bytes_number):
 
 def authenticate_dropbox(token):
     """
-    Authenticate to Dropbox with the given token.
-    Exit the script if authentication fails.
+    Authenticate to Dropbox using the provided token. If the token is team-scoped, find and impersonate an admin user from the team.
+
+    :param token: Dropbox API token.
+    :return: Authenticated Dropbox client.
     """
     dbx = dropbox.Dropbox(token)
     try:
@@ -51,47 +57,57 @@ def authenticate_dropbox(token):
         dbx.users_get_current_account()
     except BadInputError:
         # Handle team-scoped token
-        print("Detected team-scoped token. Proceeding with admin privileges...")
+        print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
         team = dropbox.DropboxTeam(token)
-        
         # Find the admin of the team
         result = team.team_members_list()
-        admin_id = [member.profile.team_member_id for member in result.members 
-                        if member.role.is_team_admin()][0]
+        admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
         dbx = team.as_user(admin_id)
     except AuthError as e:
-        print("ERROR: Invalid access token; try re-generating an access token.")
+        print("ERROR: Invalid access token. Please re-issue or regenerate your access token.", flush=True)
         exit()
-
     return dbx
 
 def authenticate_twilio(account_sid, auth_token):
     """
-    Authenticate to Twilio with the given credentials.
+    Authenticate to Twilio with the provided account SID and auth token.
+
+    :param account_sid: Twilio Account SID.
+    :param auth_token: Twilio Auth Token.
+    :return: Authenticated Twilio client.
     """
     return Client(account_sid, auth_token)
 
 def retrieve_storage_info(dropbox_client, verbose):
+    """
+    Retrieve storage usage data from Dropbox. If verbose is set to True, print the storage information.
+
+    :param dropbox_client: Authenticated Dropbox client.
+    :param verbose: Boolean variable denoting whether to print verbose messages.
+    :return: Storage usage data from Dropbox.
+    """
     if verbose:
-        print("Retrieving storage info...")
-
+        print("Retrieving storage info...", flush=True)
     usage = dropbox_client.users_get_space_usage()
-
     if usage.allocation.is_individual():
         allocated = usage.allocation.get_individual().allocated
-    else: # team scope
+    else:  # team scope
         allocated = usage.allocation.get_team().allocated
-
     if verbose:
-        print(f"Fetched details: Used = {convert_bytes_to_readable(usage.used)}, Allocated = {convert_bytes_to_readable(allocated)}")
-    
+        print(f"Fetched details: Used = {convert_bytes_to_readable(usage.used)}, Allocated = {convert_bytes_to_readable(allocated)}", flush=True)
     return usage
 
 def run_once(dropbox_client, twilio_client, verbose):
     """
-    Run the script once:
-    - Read the Dropbox storage usage
-    - Compare against thresholds and send Twilio alerts if appropriate
+    Execute the script once to:
+    - Retrieve Dropbox storage usage.
+    - Compare usage against thresholds.
+    - Send alerts via Twilio if the usage is above thresholds.
+
+    :param dropbox_client: Authenticated Dropbox client.
+    :param twilio_client: Authenticated Twilio client.
+    :param verbose: Boolean variable signifying whether to print verbose logs.
+    :return: None.
     """
     storage_info = retrieve_storage_info(dropbox_client, verbose)
     delta = None
@@ -99,35 +115,56 @@ def run_once(dropbox_client, twilio_client, verbose):
 
 def run_daemon(dropbox_client, twilio_client, verbose):
     """
-    Run the script as a daemon:
-    - Continuously (every 5 minutes) read the Dropbox storage usage
-    - Compare usage against thresholds and send Twilio alerts if appropriate
+    Execute the script in a constant loop to:
+    - Continuously, every 5 minutes, retrieve Dropbox storage usage.
+    - Compare usage against thresholds.
+    - Send alerts via Twilio if the usage is above thresholds.
+
+    :param dropbox_client: Authenticated Dropbox client.
+    :param twilio_client: Authenticated Twilio client.
+    :param verbose: Boolean variable signifying whether to print verbose logs.
+    :return: None.
     """
-    prev_storage_info = None # store the previous storage info to calculate delta
+    prev_storage_info = None
     while True:
         curr_storage_info = retrieve_storage_info(dropbox_client, verbose)
         if prev_storage_info is not None:
             delta = calculate_delta(prev_storage_info, curr_storage_info)
         else:
             delta = None
-        
         prev_storage_info = curr_storage_info
         alert_if_needed(curr_storage_info, delta, twilio_client, verbose)
-        time.sleep(300)
+        time.sleep(300)  # 5 minutes
 
 def calculate_delta(prev_storage_info, curr_storage_info):
+    """
+    Compute the change in storage usage from the previous check to the current check.
+
+    :param prev_storage_info: Storage usage data from the previous check.
+    :param curr_storage_info: Storage usage data from the current check.
+    :return: The change in storage usage.
+    """
     return curr_storage_info.used - prev_storage_info.used
 
 def send_alert(twilio_client, alert_type, delta_msg, storage_used_readable, usage_pc):
     """
-    Send the alert message using Twilio API
+    Send an alert message via the Twilio API.
+    
+    :param twilio_client: Authenticated Twilio client.
+    :param alert_type: String indicating the type of alert.
+    :param delta_msg: String detailing the change in storage use from the last check.
+    :param storage_used_readable: String denoting the storage usage in a human-readable format.
+    :param usage_pc: Float indicating the storage usage in percentage.
+    :return: None.
     """
-    if alert_type == 'critical':
+    if alert_type == 'CRITICAL':
         msg_body = f"CRITICAL ALERT: Dropbox storage usage is at {usage_pc}% ({storage_used_readable}).{delta_msg}"
-    elif alert_type == 'warning':
+    elif alert_type == 'WARNING':
         msg_body = f"WARNING: Dropbox storage usage is at {usage_pc}% ({storage_used_readable}).{delta_msg}"
-    else:  # alert_type == 'alert'
+    elif alert_type == 'ALERT':
         msg_body = f"ALERT: Dropbox storage usage is at {usage_pc}% ({storage_used_readable}).{delta_msg}"
+    else:
+        msg_body = f"Dropbox storage usage is at {usage_pc}% ({storage_used_readable}).{delta_msg}"
 
     for phone_number in PHONE_NUMBERS:
         message = twilio_client.messages.create(
@@ -135,9 +172,18 @@ def send_alert(twilio_client, alert_type, delta_msg, storage_used_readable, usag
             from_=TWILIO_PHONE_NUMBER,
             to=phone_number
         )
-        print(f"Alert sent to {phone_number}.")
+        print(f"Alert sent to {phone_number}.", flush=True)
 
 def alert_if_needed(storage_info, delta, twilio_client, verbose):
+    """
+    Evaluate the storage usage and send an alert when usage surpasses established thresholds.
+    
+    :param storage_info: Storage usage data from Dropbox.
+    :param delta: The difference in storage use from the previous to the current check.
+    :param twilio_client: Authenticated Twilio client.
+    :param verbose: Boolean variable denoting whether to print verbose logs.
+    :return: None
+    """
     global hourly_counter, hour_start_time, alert_sent, warning_sent
 
     if storage_info.allocation.is_individual():
@@ -205,20 +251,12 @@ def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr
         "state": state,
     }
     mqtt_client.publish(MQTT_TOPIC, json.dumps(mqtt_payload))
-
+    
 def main():
     global mqtt_client
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--one-shot",
-        action='store_true',
-        default=False,
-        help='Run the script once and exit')
-    parser.add_argument(
-        "-v",
-        action='store_true',
-        default=bool(LOGGING),
-        help="Show verbose output")
+    parser.add_argument("--one-shot", action='store_true', default=False, help='Run the script once and exit')
+    parser.add_argument("-v", action='store_true', default=bool(LOGGING), help="Display verbose log output")
     args = parser.parse_args()
 
     if MQTT_SERVER:
