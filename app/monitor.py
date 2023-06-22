@@ -1,4 +1,5 @@
 import os
+import signal
 import argparse
 import dropbox
 from dropbox.exceptions import AuthError, BadInputError
@@ -10,7 +11,7 @@ import json
 import sys
 import base64
 import requests
-from flask import Flask, request, make_response, jsonify
+from flask import Flask, request, jsonify, make_response, after_this_request
 import threading
 import webbrowser
 
@@ -33,6 +34,7 @@ MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))  # MQTT port to use for updates
 MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'dropbox')  # MQTT topic to publish updates to
 MQTT_USERNAME = os.getenv('MQTT_USERNAME', None)
 MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', None)
+OAUTH_LOCALHOST_PORT = int(os.getenv('OAUTH_LOCALHOST_PORT', '53682'))
 
 # MQTT Server connection variables
 MAX_RETRIES = 5  # maximum number of retries for connection to MQTT server
@@ -48,7 +50,7 @@ warning_sent = 0
 mqtt_client = None
 
 app = Flask(__name__)
-redirect_uri = 'http://localhost:5000/oauth2/callback'
+redirect_uri = f'http://localhost:{OAUTH_LOCALHOST_PORT}/oauth2/callback'
 
 @app.route('/oauth2/callback', methods=['GET', 'OPTIONS'])
 def oauth2_callback():
@@ -79,11 +81,21 @@ def oauth2_callback():
             token_data = r.json()
             base64_token = base64.b64encode(json.dumps(token_data).encode())
             token_str = base64_token.decode()
-            return jsonify(message=f"Access token refreshed. Please set this in your environment variable: DROPBOX_TOKEN={token_str}"), 200
+            response = make_response((jsonify(message=f"Access token refreshed. Please set this in your environment variable: DROPBOX_TOKEN={token_str}"), 200))
+            # Define what to do after this request
+            @after_this_request
+            def shutdown(response):
+                print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={token_str}", flush=True)
+                threading.Timer(1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+                return response
+
+            return response
         else:
-            return jsonify(error="Error getting tokens."), 400
+            response = make_response((jsonify(error="Error getting tokens."), 400))
+            return response
     else:
-        return jsonify(error="No code found in request."), 400
+        response = make_response((jsonify(error="No code found in request."), 400))
+        return response
 
 def start_oauth():
     """
@@ -92,7 +104,7 @@ def start_oauth():
     """
     auth_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={DROPBOX_APP_KEY}&redirect_uri={redirect_uri}&token_access_type=offline"
     threading.Timer(1, lambda: webbrowser.open_new(auth_url)).start()
-    app.run()
+    app.run(port=OAUTH_LOCALHOST_PORT)
 
 def authenticate_dropbox(creds):
     """
