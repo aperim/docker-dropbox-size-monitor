@@ -30,6 +30,8 @@ LOGGING = int(os.getenv('LOGGING', '0'))  # Default value: 0
 MQTT_SERVER = os.getenv('MQTT_SERVER', None)  # MQTT server to use for updates
 MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))  # MQTT port to use for updates
 MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'dropbox')  # MQTT topic to publish updates to
+MQTT_USERNAME = os.getenv('MQTT_USERNAME', None)
+MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', None)
 
 # Variables used for rate limiting and to control number of alerts/warnings sent
 hourly_counter = 0
@@ -62,7 +64,7 @@ def oauth2_callback():
         if r.status_code == 200:
             token_data = r.json()
             base64_token = base64.b64encode(json.dumps(token_data).encode())
-            print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}")
+            print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}", flush=True)
             os._exit(0)  # Ensure the script stops after printing token
         else:
             return "Error getting tokens.", 400
@@ -76,7 +78,7 @@ def start_oauth():
 
 def authenticate_dropbox(creds):
     if 'access_token' not in creds or 'refresh_token' not in creds or 'uid' not in creds:
-        print("Malformed DROPBOX_TOKEN. Please ensure it's a Base64 encoded string of the token json received from Dropbox.")
+        print("Malformed DROPBOX_TOKEN. Please ensure it's a Base64 encoded string of the token json received from Dropbox.", flush=True)
         os._exit(0)
     
     uid = creds['uid']
@@ -107,7 +109,7 @@ def authenticate_dropbox(creds):
             if r.status_code == 200:
                 token_data = r.json()
                 base64_token = base64.b64encode(json.dumps(token_data).encode())
-                print(f"Access token refreshed. Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}")
+                print(f"Access token refreshed. Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}", flush=True)
                 dbx = dropbox.Dropbox(token_data['access_token'])
                 dbx.users_get_current_account()
             else:
@@ -261,7 +263,7 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
     storage_used_readable = convert_bytes_to_readable(storage_info.used)
 
     if verbose:
-        print(f"Current storage usage is {usage_pc}% ({storage_used_readable}).")
+        print(f"Current storage usage is {usage_pc}% ({storage_used_readable}).", flush=True)
 
     current_hour = datetime.datetime.now().hour
     if current_hour != hour_start_time:
@@ -272,7 +274,7 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
 
     if hourly_counter >= MAX_ALERTS:
         if verbose:
-            print("Maximum number of messages per hour reached. Not sending more alerts this hour.")
+            print("Maximum number of messages per hour reached. Not sending more alerts this hour.", flush=True)
         return
 
     delta_msg = f". Storage use change from last check: {delta}" if delta else ""
@@ -282,14 +284,14 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
 
     if usage_pc >= CRITICAL_THRESHOLD:
         if verbose:
-            print("Current storage usage exceeds critical threshold. Sending critical alert...")
+            print("Current storage usage exceeds critical threshold. Sending critical alert...", flush=True)
         send_alert(twilio_client, "critical", delta_msg, storage_used_readable, usage_pc)
         alert_type = 'CRITICAL'
         hourly_counter += 1
     elif usage_pc >= WARNING_THRESHOLD:
         if warning_sent < 2:
             if verbose:
-                print("Current storage usage exceeds warning threshold. Sending warning...")
+                print("Current storage usage exceeds warning threshold. Sending warning...", flush=True)
             send_alert(twilio_client, "warning", delta_msg, storage_used_readable, usage_pc)
             alert_type = 'WARNING'
             hourly_counter += 1
@@ -297,16 +299,16 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
     elif usage_pc >= ALERT_THRESHOLD:
         if not alert_sent:
             if verbose:
-                print("Current storage usage exceeds alert threshold. Sending alert...")
+                print("Current storage usage exceeds alert threshold. Sending alert...", flush=True)
             send_alert(twilio_client, "alert", delta_msg, storage_used_readable, usage_pc)
             alert_type = 'ALERT'
             hourly_counter += 1
             alert_sent = 1
 
     if MQTT_SERVER:
-        publish_mqtt_update(usage_pc, storage_info.used, storage_used_readable, allocated, convert_bytes_to_readable(allocated), alert_type)
+        publish_mqtt_update(usage_pc, storage_info.used, storage_used_readable, allocated, convert_bytes_to_readable(allocated), alert_type, verbose)
 
-def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr, state):
+def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr, state, verbose):
     mqtt_payload = {
         "usagePercentage": usage_pc,
         "usedBytes": used_bytes,
@@ -315,7 +317,21 @@ def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr
         "allocationHumanReadable": allocation_hr,
         "state": state,
     }
-    mqtt_client.publish(MQTT_TOPIC, json.dumps(mqtt_payload))
+    result = mqtt_client.publish(f"{MQTT_TOPIC}json", json.dumps(mqtt_payload))
+    status = result[0]
+    if status == 0:
+        if verbose:
+            print(f"Send `{json.dumps(mqtt_payload)}` to topic `{MQTT_TOPIC}json`", flush=True)
+    else:
+        print(f"Failed to send message to topic {MQTT_TOPIC}json", flush=True)
+    result = mqtt_client.publish(MQTT_TOPIC, state)
+    status = result[0]
+    if status == 0:
+        if verbose:
+            print(f"Send `{state}` to topic `{MQTT_TOPIC}`", flush=True)
+    else:
+        print(f"Failed to send message to topic {MQTT_TOPIC}", flush=True)
+
 
 def main():
     global mqtt_client
@@ -324,24 +340,28 @@ def main():
     parser.add_argument("-v", action='store_true', default=bool(LOGGING), help="Display verbose log output")
     args = parser.parse_args()
 
-    if MQTT_SERVER:
-        mqtt_client = mqtt.Client()
-        mqtt_client.connect(MQTT_SERVER, MQTT_PORT)
-        mqtt_client.loop_start()
-
     if not DROPBOX_TOKEN:
-        print("DROPBOX_TOKEN not found. Starting Dropbox oAuth process...")
+        print("DROPBOX_TOKEN not found. Starting Dropbox oAuth process...", flush=True)
         start_oauth()
         return
-
-    try:
-        creds = json.loads(base64.b64decode(DROPBOX_TOKEN).decode())
-    except Exception as e:
-        print("Failed to decode DROPBOX_TOKEN. Ensure it's a Base64 encoded string of the token json received from Dropbox.")
-        os._exit(0)
+    else:
+        try:
+            creds = json.loads(base64.b64decode(DROPBOX_TOKEN).decode())
+        except Exception as e:
+            print("Failed to decode DROPBOX_TOKEN. Ensure it's a Base64 encoded string of the token json received from Dropbox.", flush=True)
+            os._exit(0)
 
     dropbox_client = authenticate_dropbox(creds)
     twilio_client = authenticate_twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+    if MQTT_SERVER:
+        mqtt_client = mqtt.Client()
+
+        if MQTT_USERNAME and MQTT_PASSWORD:
+            mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
+        mqtt_client.connect(MQTT_SERVER, MQTT_PORT)
+        mqtt_client.loop_start()
 
     if args.one_shot:
         run_once(dropbox_client, twilio_client, args.v)
