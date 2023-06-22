@@ -8,8 +8,9 @@ import datetime
 import paho.mqtt.client as mqtt
 import json
 import sys
-from flask import Flask, request
+import base64
 import requests
+from flask import Flask, request
 import threading
 import webbrowser
 
@@ -47,18 +48,22 @@ def oauth2_callback():
     code = request.args.get('code')
     if code:
         token_url = 'https://api.dropbox.com/oauth2/token'
-        auth = requests.auth.HTTPBasicAuth(DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
+        auth_header = base64.b64encode(f"{DROPBOX_APP_KEY}:{DROPBOX_APP_SECRET}".encode())
+        headers = {
+            'Authorization': f"Basic {auth_header.decode()}",
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
         data = {
             'grant_type': 'authorization_code',
             'code': code,
             'redirect_uri': redirect_uri,
         }
-        r = requests.post(token_url, data=data, auth=auth)
+        r = requests.post(token_url, data=data, headers=headers)
         if r.status_code == 200:
             token_data = r.json()
-            print(json.dumps(token_data, indent = 4))
-            print(f"Copy and set these in your environment variables:\nDROPBOX_TOKEN={token_data['access_token']}\nDROPBOX_REFRESH_TOKEN={token_data['refresh_token']}")
-            return "You can now close this page.", 200
+            base64_token = base64.b64encode(json.dumps(token_data).encode())
+            print(f"Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}")
+            os._exit(0)  # Ensure the script stops after printing token
         else:
             return "Error getting tokens.", 400
     else:
@@ -69,38 +74,62 @@ def start_oauth():
     threading.Timer(1, lambda: webbrowser.open_new(auth_url)).start()
     app.run()
 
-def authenticate_dropbox(token, refresh_token):
-    dbx = dropbox.Dropbox(token)
+def authenticate_dropbox(creds):
+    if 'access_token' not in creds or 'refresh_token' not in creds or 'uid' not in creds:
+        print("Malformed DROPBOX_TOKEN. Please ensure it's a Base64 encoded string of the token json received from Dropbox.")
+        os._exit(0)
+    
+    uid = creds['uid']
+    access_token = creds['access_token']
+    refresh_token = creds['refresh_token']
+    dbx = dropbox.Dropbox(access_token)
     try:
+        # This will fail if the token is incorrect, is team scoped, or access token is expired
         dbx.users_get_current_account()
     except BadInputError:
         print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
-        team = dropbox.DropboxTeam(token)
+        team = dropbox.DropboxTeam(access_token)
         result = team.team_members_list()
         admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
         dbx = team.as_user(admin_id)
+        return dbx
     except AuthError as e:
-        if e.error.is_expired_access_token():
+        if isinstance(e.error, dropbox.exceptions.ExpiredAccessTokenError):
             print("Access token expired. Refreshing...", flush=True)
             token_url = 'https://api.dropbox.com/oauth2/token'
-            auth = requests.auth.HTTPBasicAuth(DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
-            data = {
-                'grant_type': 'refresh_token',
-                'refresh_token': refresh_token
+            auth_header = base64.b64encode(f"{DROPBOX_APP_KEY}:{DROPBOX_APP_SECRET}".encode())
+            headers = {
+                'Authorization': f"Basic {auth_header.decode()}",
+                'Content-Type': 'application/x-www-form-urlencoded',
             }
-            r = requests.post(token_url, data=data, auth=auth)
+            data = { 'grant_type': 'refresh_token', 'refresh_token': refresh_token }
+            r = requests.post(token_url, data=data, headers=headers)
             if r.status_code == 200:
                 token_data = r.json()
-                print(f"Copy and set these in your environment variables:\nDROPBOX_TOKEN={token_data['access_token']}\nDROPBOX_REFRESH_TOKEN={token_data['refresh_token']}")
+                base64_token = base64.b64encode(json.dumps(token_data).encode())
+                print(f"Access token refreshed. Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}")
                 dbx = dropbox.Dropbox(token_data['access_token'])
                 dbx.users_get_current_account()
             else:
                 print("Error refreshing token.", flush=True)
-                exit()
+                os._exit(0)
         else:
             print("ERROR: Invalid access token. Please re-issue or regenerate your access token.", flush=True)
-            exit()           
+            os._exit(0)
+    except dropbox.exceptions.BadRequestError:
+        print(f"Uid {uid} in DROPBOX_TOKEN doesn't match the one in the access token", flush=True)
+        os._exit(0)
     return dbx
+
+def authenticate_twilio(account_sid, auth_token):
+    """
+    Authenticate to Twilio with the provided account SID and auth token.
+
+    :param account_sid: Twilio Account SID.
+    :param auth_token: Twilio Auth Token.
+    :return: Authenticated Twilio client.
+    """
+    return Client(account_sid, auth_token)
 
 def convert_bytes_to_readable(bytes_number):
     """
@@ -113,16 +142,6 @@ def convert_bytes_to_readable(bytes_number):
         if bytes_number < 1024.0:
             return f"{bytes_number:3.1f}{unit}"
         bytes_number /= 1024.0
-
-def authenticate_twilio(account_sid, auth_token):
-    """
-    Authenticate to Twilio with the provided account SID and auth token.
-
-    :param account_sid: Twilio Account SID.
-    :param auth_token: Twilio Auth Token.
-    :return: Authenticated Twilio client.
-    """
-    return Client(account_sid, auth_token)
 
 def retrieve_storage_info(dropbox_client, verbose):
     """
@@ -311,11 +330,17 @@ def main():
         mqtt_client.loop_start()
 
     if not DROPBOX_TOKEN:
-        print("Starting Dropbox oAuth process...")
+        print("DROPBOX_TOKEN not found. Starting Dropbox oAuth process...")
         start_oauth()
         return
 
-    dropbox_client = authenticate_dropbox(DROPBOX_TOKEN, DROPBOX_REFRESH_TOKEN)
+    try:
+        creds = json.loads(base64.b64decode(DROPBOX_TOKEN).decode())
+    except Exception as e:
+        print("Failed to decode DROPBOX_TOKEN. Ensure it's a Base64 encoded string of the token json received from Dropbox.")
+        os._exit(0)
+
+    dropbox_client = authenticate_dropbox(creds)
     twilio_client = authenticate_twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
     if args.one_shot:
