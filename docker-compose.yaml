@@ -1,0 +1,11 @@
+version: '3'
+services:
+  dropbox-monitor:
+    image: ghcr.io/aperim/docker-dropbox-size-monitor:latest
+    restart: always
+    environment:
+      - DROPBOX_TOKEN
+      - TWILIO_ACCOUNT_SID
+      - TWILIO_AUTH_TOKEN
+      - TWILIO_PHONE_NUMBER
+      - PHONE_NUMBERS
