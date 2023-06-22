@@ -5,11 +5,23 @@ services:
     restart: always
     environment:
       - DROPBOX_TOKEN
+      - DROPBOX_REFRESH_TOKEN
+      - DROPBOX_APP_KEY
+      - DROPBOX_APP_SECRET
+      - TWILIO_PHONE_NUMBER
       - TWILIO_ACCOUNT_SID
       - TWILIO_AUTH_TOKEN
-      - TWILIO_PHONE_NUMBER
       - PHONE_NUMBERS
+      - ALERT_THRESHOLD
+      - WARNING_THRESHOLD
+      - CRITICAL_THRESHOLD
+      - MAX_ALERTS
       - LOGGING
+      - MQTT_SERVER
+      - MQTT_PORT
+      - MQTT_TOPIC
+      - MQTT_USERNAME
+      - MQTT_PASSWORD
     deploy:
       replicas: 1
       placement:
