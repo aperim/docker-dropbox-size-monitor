@@ -8,8 +8,15 @@ import datetime
 import paho.mqtt.client as mqtt
 import json
 import sys
+from flask import Flask, request
+import requests
+import threading
+import webbrowser
 
 DROPBOX_TOKEN = os.getenv('DROPBOX_TOKEN')
+DROPBOX_REFRESH_TOKEN = os.getenv('DROPBOX_REFRESH_TOKEN')
+DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
+DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -32,6 +39,69 @@ warning_sent = 0
 # Used for the mqtt client - this work is incomplete
 mqtt_client = None
 
+app = Flask(__name__)
+redirect_uri = 'http://localhost:5000/oauth2/callback'
+
+@app.route('/oauth2/callback')
+def oauth2_callback():
+    code = request.args.get('code')
+    if code:
+        token_url = 'https://api.dropbox.com/oauth2/token'
+        auth = requests.auth.HTTPBasicAuth(DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
+        data = {
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': redirect_uri,
+        }
+        r = requests.post(token_url, data=data, auth=auth)
+        if r.status_code == 200:
+            token_data = r.json()
+            print(json.dumps(token_data, indent = 4))
+            print(f"Copy and set these in your environment variables:\nDROPBOX_TOKEN={token_data['access_token']}\nDROPBOX_REFRESH_TOKEN={token_data['refresh_token']}")
+            return "You can now close this page.", 200
+        else:
+            return "Error getting tokens.", 400
+    else:
+        return "No code found in request.", 400
+
+def start_oauth():
+    auth_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={DROPBOX_APP_KEY}&redirect_uri={redirect_uri}&token_access_type=offline"
+    threading.Timer(1, lambda: webbrowser.open_new(auth_url)).start()
+    app.run()
+
+def authenticate_dropbox(token, refresh_token):
+    dbx = dropbox.Dropbox(token)
+    try:
+        dbx.users_get_current_account()
+    except BadInputError:
+        print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
+        team = dropbox.DropboxTeam(token)
+        result = team.team_members_list()
+        admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
+        dbx = team.as_user(admin_id)
+    except AuthError as e:
+        if e.error.is_expired_access_token():
+            print("Access token expired. Refreshing...", flush=True)
+            token_url = 'https://api.dropbox.com/oauth2/token'
+            auth = requests.auth.HTTPBasicAuth(DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
+            data = {
+                'grant_type': 'refresh_token',
+                'refresh_token': refresh_token
+            }
+            r = requests.post(token_url, data=data, auth=auth)
+            if r.status_code == 200:
+                token_data = r.json()
+                print(f"Copy and set these in your environment variables:\nDROPBOX_TOKEN={token_data['access_token']}\nDROPBOX_REFRESH_TOKEN={token_data['refresh_token']}")
+                dbx = dropbox.Dropbox(token_data['access_token'])
+                dbx.users_get_current_account()
+            else:
+                print("Error refreshing token.", flush=True)
+                exit()
+        else:
+            print("ERROR: Invalid access token. Please re-issue or regenerate your access token.", flush=True)
+            exit()           
+    return dbx
+
 def convert_bytes_to_readable(bytes_number):
     """
     Convert the given number of bytes to a human-readable format.
@@ -43,30 +113,6 @@ def convert_bytes_to_readable(bytes_number):
         if bytes_number < 1024.0:
             return f"{bytes_number:3.1f}{unit}"
         bytes_number /= 1024.0
-
-def authenticate_dropbox(token):
-    """
-    Authenticate to Dropbox using the provided token. If the token is team-scoped, find and impersonate an admin user from the team.
-
-    :param token: Dropbox API token.
-    :return: Authenticated Dropbox client.
-    """
-    dbx = dropbox.Dropbox(token)
-    try:
-        # This will fail if the token is incorrect or is team scoped
-        dbx.users_get_current_account()
-    except BadInputError:
-        # Handle team-scoped token
-        print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
-        team = dropbox.DropboxTeam(token)
-        # Find the admin of the team
-        result = team.team_members_list()
-        admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
-        dbx = team.as_user(admin_id)
-    except AuthError as e:
-        print("ERROR: Invalid access token. Please re-issue or regenerate your access token.", flush=True)
-        exit()
-    return dbx
 
 def authenticate_twilio(account_sid, auth_token):
     """
@@ -251,7 +297,7 @@ def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr
         "state": state,
     }
     mqtt_client.publish(MQTT_TOPIC, json.dumps(mqtt_payload))
-    
+
 def main():
     global mqtt_client
     parser = argparse.ArgumentParser()
@@ -264,7 +310,12 @@ def main():
         mqtt_client.connect(MQTT_SERVER, MQTT_PORT)
         mqtt_client.loop_start()
 
-    dropbox_client = authenticate_dropbox(DROPBOX_TOKEN)
+    if not DROPBOX_TOKEN:
+        print("Starting Dropbox oAuth process...")
+        start_oauth()
+        return
+
+    dropbox_client = authenticate_dropbox(DROPBOX_TOKEN, DROPBOX_REFRESH_TOKEN)
     twilio_client = authenticate_twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
     if args.one_shot:
