@@ -9,3 +9,14 @@ services:
       - TWILIO_AUTH_TOKEN
       - TWILIO_PHONE_NUMBER
       - PHONE_NUMBERS
+    deploy:
+      replicas: 1
+      placement:
+        max_replicas_per_node: 1
+        constraints:
+          - node.role==worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
