@@ -46,7 +46,18 @@ Then run the script using Docker:
 docker run -p 5000:5000 --env-file .env ghcr.io/aperim/docker-dropbox-size-monitor:latest
 ```
 
-Similar to running the script locally, you will see a URL in your web browser. Upon approving the script's access to your Dropbox, you will be redirected to a local server page. The tokens will be printed on the console where you ran the Docker command. 
+Similar to running the script locally, you will see a URL in your web browser. Upon approving the script's access to your Dropbox, you will be redirected to a local server page. The tokens will be printed on the console where you ran the Docker command.
+
+### Validating Container Signature
+
+The `latest` container will be signed. Use the public key below to verify.
+
+```text
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsXVH35nPvwu15V3Vs7oj4pCO6xuC
++1nInXhTUuySGotaLD1vDpxEU1w1RsbJ1LqFkd1gSUzMoaYSFl5BVZzomw==
+-----END PUBLIC KEY-----
+```
 
 ## Environment Variables
 
