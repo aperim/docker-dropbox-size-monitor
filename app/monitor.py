@@ -106,6 +106,34 @@ def start_oauth():
     threading.Timer(1, lambda: webbrowser.open_new(auth_url)).start()
     app.run(port=OAUTH_LOCALHOST_PORT)
 
+def create_dropbox_client(access_token, depth=0):
+    """
+    Create an authenticated Dropbox client with either user or team scope.
+
+    By checking the access token's validity and scope, it returns the appropriate Dropbox client.
+
+    :param access_token: string.
+    :param depth: integer, tracks the number of recursive calls to prevent infinite recursion.
+    :return: Authenticated Dropbox client (individual or team scope as applicable).
+    """
+    MAX_DEPTH = 5  # Define a reasonable maximum recursion depth
+
+    if depth > MAX_DEPTH:
+        print(f"Exceeded maximum recursion depth while creating a Dropbox client.", flush=True)
+        os._exit(1)
+    
+    try:
+        dbx = dropbox.Dropbox(access_token)
+        dbx.users_get_current_account()
+        return dbx
+    except BadInputError:
+        print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
+        team = dropbox.DropboxTeam(access_token)
+        result = team.team_members_list()
+        admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
+        return team.as_user(admin_id)
+
+
 def authenticate_dropbox(creds):
     """
     Authenticate to Dropbox with the provided credentials.
@@ -118,24 +146,16 @@ def authenticate_dropbox(creds):
     """
     if 'access_token' not in creds or 'refresh_token' not in creds or 'uid' not in creds:
         print("Malformed DROPBOX_TOKEN. Please ensure it's a Base64 encoded string of the token json received from Dropbox.", flush=True)
-        os._exit(0)
+        os._exit(1)
     
     uid = creds['uid']
     access_token = creds['access_token']
     refresh_token = creds['refresh_token']
-    dbx = dropbox.Dropbox(access_token)
+
     try:
-        # This will fail if the token is incorrect, is team scoped, or access token is expired
-        dbx.users_get_current_account()
-    except BadInputError:
-        print("Detected team-scoped token. Proceeding with admin privileges...", flush=True)
-        team = dropbox.DropboxTeam(access_token)
-        result = team.team_members_list()
-        admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
-        dbx = team.as_user(admin_id)
-        return dbx
+        return create_dropbox_client(access_token)
     except AuthError as e:
-        if isinstance(e.error, dropbox.exceptions.ExpiredAccessTokenError):
+        if 'expired_access_token' in str(e.error):
             print("Access token expired. Refreshing...", flush=True)
             token_url = 'https://api.dropbox.com/oauth2/token'
             auth_header = base64.b64encode(f"{DROPBOX_APP_KEY}:{DROPBOX_APP_SECRET}".encode())
@@ -145,22 +165,21 @@ def authenticate_dropbox(creds):
             }
             data = { 'grant_type': 'refresh_token', 'refresh_token': refresh_token }
             r = requests.post(token_url, data=data, headers=headers)
+
             if r.status_code == 200:
                 token_data = r.json()
-                base64_token = base64.b64encode(json.dumps(token_data).encode())
-                print(f"Access token refreshed. Copy and set this in your environment variable:\nDROPBOX_TOKEN={base64_token.decode()}", flush=True)
-                dbx = dropbox.Dropbox(token_data['access_token'])
-                dbx.users_get_current_account()
+                expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=token_data['expires_in'])
+                print(f"Access token refreshed. The new access token will expire at {expiry_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+                return create_dropbox_client(token_data['access_token'])
             else:
                 print("Error refreshing token.", flush=True)
-                os._exit(0)
+                os._exit(1)
         else:
             print("ERROR: Invalid access token. Please re-issue or regenerate your access token.", flush=True)
-            os._exit(0)
+            os._exit(1)
     except dropbox.exceptions.BadRequestError:
         print(f"Uid {uid} in DROPBOX_TOKEN doesn't match the one in the access token", flush=True)
-        os._exit(0)
-    return dbx
+        os._exit(1)
 
 def authenticate_twilio(account_sid, auth_token):
     """
