@@ -33,6 +33,7 @@ jobs:
           images: |
             ghcr.io/${{ github.repository }}
           tags: |
+            type=raw,latest
             type=sha,format=long
             type=ref,event=branch
             type=ref,event=pr
@@ -78,7 +79,7 @@ jobs:
             -a "repo=${{ github.repository }}" \
             -a "workflow=${{ github.workflow }}" \
             -a "ref=${{ github.sha }}" \
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}@${{ github.sha }}:latest
         env:
           COSIGN_PASSWORD: "${{ secrets.APERIM_SIGNING_PASSWORD }}"
           # COSIGN_PASSWORD is required if your signing key is password protected
