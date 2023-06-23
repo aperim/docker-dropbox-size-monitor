@@ -1,4 +1,4 @@
-name: Publish Docker image
+name: Publish Docker image with caching and signing
 on:
   push:
     branches:
@@ -7,19 +7,64 @@ jobs:
   push_to_registry:
     runs-on: ubuntu-latest
     steps:
+      # Step to checkout the current repo
       - name: Check out the repo
         uses: actions/checkout@v3
 
+      # Setup Docker Buildx
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      # Cache Docker layers to improve build speed
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache  # Path where the build cache will be stored
+          key: ${{ runner.os }}-buildx-${{ github.sha }}  # Unique key for the current cache
+          restore-keys: |
+            ${{ runner.os }}-buildx-  # Fallback cache key if the current cache key doesn't exist
+
+      # Login to GitHub Container Registry
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}  # GitHub username
+          password: ${{ secrets.GITHUB_TOKEN }}  # GitHub token to log in to the registry
 
+      # Build and push Docker image
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}:latest
+          cache-from: type=local,path=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+        
+      # Install the cosign executable for image signing
+      - name: Install cosign
+        uses: sigstore/cosign-installer@main
+
+      # Write the signing key stored in GitHub secrets to a file
+      - name: Write signing key to disk
+        run: echo "${{ secrets.APERIM_SIGNING_SECRET }}" > cosign.key
+        # To create the SIGNING_SECRET, follow these steps:
+        # - Run `cosign generate-key-pair` in your local machine
+        # - This will generate a pair of private (`cosign.key`) & public (`cosign.pub`) keys
+        # - Convert the `cosign.key` to a single line by removing newlines: `awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' cosign.key`
+        # - Navigate to Settings > Secrets in your repository and `Add new repository secret` with the name `SIGNING_SECRET`. Paste the output from the previous step as the value.
+
+      # Sign the Docker image using cosign with annotations
+      - name: Sign container image
+        run: |
+          cosign sign --key cosign.key \
+            -a "repo=${{ github.repository }}" \
+            -a "workflow=${{ github.workflow }}" \
+            -a "ref=${{ github.sha }}" \
+            ghcr.io/${{ github.repository }}:latest
+        env:
+          COSIGN_PASSWORD: "${{ secrets.APERIM_SIGNING_PASSWORD }}"
+          # COSIGN_PASSWORD is required if your signing key is password protected
+          # If it's not, then replace COSIGN_PASSWORD: "" with COSIGN_PASSWORD: "<Your-Key-Password>"
+          # Remember, never hardcode secrets or passwords in your source code, use GitHub Secrets instead.
