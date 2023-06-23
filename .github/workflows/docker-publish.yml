@@ -68,6 +68,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Install the crane executable for image signing
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.1
         
       # Install the cosign executable for image signing
       - name: Install cosign
@@ -85,11 +89,12 @@ jobs:
       # Sign the Docker image using cosign with annotations
       - name: Sign container image
         run: |
+          CONTAINER_SHA=$(crane digest ghcr.io/${{ github.repository }}:sha-${{ github.sha }})
           cosign sign --key cosign.key \
             -a "repo=${{ github.repository }}" \
             -a "workflow=${{ github.workflow }}" \
             -a "ref=${{ github.sha }}" \
-            ghcr.io/${{ github.repository }}@sha256:${{ github.sha }}
+            ghcr.io/${{ github.repository }}@sha256:${CONTAINER_SHA}
         env:
           COSIGN_PASSWORD: "${{ secrets.APERIM_SIGNING_PASSWORD }}"
           # COSIGN_PASSWORD is required if your signing key is password protected
