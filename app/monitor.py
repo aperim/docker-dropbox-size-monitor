@@ -61,7 +61,6 @@ def oauth2_callback():
         response.headers.add('Access-Control-Allow-Headers', "*")
         response.headers.add('Access-Control-Allow-Methods', "*")
         return response
-
     # Handle the main request:
     code = request.args.get('code')
     if code:
@@ -132,8 +131,6 @@ def create_dropbox_client(access_token, depth=0):
         result = team.team_members_list()
         admin_id = [member.profile.team_member_id for member in result.members if member.role.is_team_admin()][0]
         return team.as_user(admin_id)
-
-
 def authenticate_dropbox(creds):
     """
     Authenticate to Dropbox with the provided credentials.
@@ -155,6 +152,7 @@ def authenticate_dropbox(creds):
     try:
         return create_dropbox_client(access_token)
     except AuthError as e:
+        print("Error has occured: ", str(e.error), flush=True)
         if 'expired_access_token' in str(e.error):
             print("Access token expired. Refreshing...", flush=True)
             token_url = 'https://api.dropbox.com/oauth2/token'
@@ -163,11 +161,12 @@ def authenticate_dropbox(creds):
                 'Authorization': f"Basic {auth_header.decode()}",
                 'Content-Type': 'application/x-www-form-urlencoded',
             }
-            data = { 'grant_type': 'refresh_token', 'refresh_token': refresh_token }
+            data = {'grant_type': 'refresh_token', 'refresh_token': refresh_token}
             r = requests.post(token_url, data=data, headers=headers)
 
             if r.status_code == 200:
                 token_data = r.json()
+                token_data['refresh_token'] = refresh_token
                 expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=token_data['expires_in'])
                 print(f"Access token refreshed. The new access token will expire at {expiry_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
                 return create_dropbox_client(token_data['access_token'])
@@ -198,11 +197,11 @@ def convert_bytes_to_readable(bytes_number):
     :param bytes_number: The number of bytes.
     :return: A string representing the number of bytes formatted to a legible format.
     """
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
-        if bytes_number < 1024.0:
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']:
+        if abs(bytes_number) < 1024.0:
             return f"{bytes_number:3.1f}{unit}"
         bytes_number /= 1024.0
-
+    return f"{bytes_number:.1f}ZB"
 def retrieve_storage_info(dropbox_client, verbose):
     """
     Retrieve storage usage data from Dropbox. If verbose is set to True, print the storage information.
@@ -270,7 +269,6 @@ def calculate_delta(prev_storage_info, curr_storage_info):
     :return: The change in storage usage.
     """
     return curr_storage_info.used - prev_storage_info.used
-
 def send_alert(twilio_client, alert_type, delta_msg, storage_used_readable, usage_pc):
     """
     Send an alert message via the Twilio API.
@@ -309,11 +307,14 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
     :param verbose: Boolean variable denoting whether to print verbose logs.
     :return: None
     """
-    global hourly_counter, hour_start_time, alert_sent, warning_sent
+    global hourly_counter
+    global hour_start_time
+    global alert_sent
+    global warning_sent
 
     if storage_info.allocation.is_individual():
         allocated = storage_info.allocation.get_individual().allocated
-    else: # team scope
+    else:  # team scope
         allocated = storage_info.allocation.get_team().allocated
 
     usage_pc = round((float(storage_info.used) / allocated) * 100, 2)
@@ -337,20 +338,19 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
 
     delta_msg = f". Storage use change from last check: {delta}" if delta else ""
 
-    # define alert_type variable before checking thresholds
     alert_type = 'OK'
 
     if usage_pc >= CRITICAL_THRESHOLD:
         if verbose:
             print("Current storage usage exceeds critical threshold. Sending critical alert...", flush=True)
-        send_alert(twilio_client, "critical", delta_msg, storage_used_readable, usage_pc)
+        send_alert(twilio_client, "CRITICAL", delta_msg, storage_used_readable, usage_pc)
         alert_type = 'CRITICAL'
         hourly_counter += 1
     elif usage_pc >= WARNING_THRESHOLD:
         if warning_sent < 2:
             if verbose:
                 print("Current storage usage exceeds warning threshold. Sending warning...", flush=True)
-            send_alert(twilio_client, "warning", delta_msg, storage_used_readable, usage_pc)
+            send_alert(twilio_client, "WARNING", delta_msg, storage_used_readable, usage_pc)
             alert_type = 'WARNING'
             hourly_counter += 1
             warning_sent += 1
@@ -358,14 +358,14 @@ def alert_if_needed(storage_info, delta, twilio_client, verbose):
         if not alert_sent:
             if verbose:
                 print("Current storage usage exceeds alert threshold. Sending alert...", flush=True)
-            send_alert(twilio_client, "alert", delta_msg, storage_used_readable, usage_pc)
+            send_alert(twilio_client, "ALERT", delta_msg, storage_used_readable, usage_pc)
             alert_type = 'ALERT'
             hourly_counter += 1
             alert_sent = 1
 
     if MQTT_SERVER:
-        publish_mqtt_update(usage_pc, storage_info.used, storage_used_readable, allocated, convert_bytes_to_readable(allocated), alert_type, verbose)
-        
+        publish_mqtt_update(usage_pc, storage_info.used, storage_used_readable, allocated, convert_bytes_to_readable(allocated),
+                            alert_type, verbose)
 def publish_mqtt_update(usage_pc, used_bytes, used_hr, allocation, allocation_hr, state, verbose):
     """
     Publish an update message to the MQTT server.
