@@ -20,7 +20,7 @@ jobs:
     steps:
       # Step to checkout the current repo
       - name: Check out the repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Setup Docker Buildx
       - name: Setup Docker Buildx
